@@ -104,7 +104,7 @@ final class AudioStreamServer {
         queue.async { [weak self] in
             guard let self else { return }
             for connection in self.connections.values {
-                connection.send(content: data, completion: .contentProcessed { _ in })
+                self.sendChunk(data, on: connection)
             }
             if self.connections.isEmpty {
                 self.backlog.append(data)
@@ -124,7 +124,7 @@ final class AudioStreamServer {
             case .ready:
                 self.sendHeaders(on: connection)
                 if !self.backlog.isEmpty {
-                    connection.send(content: self.backlog, completion: .contentProcessed { _ in })
+                    self.sendChunk(self.backlog, on: connection)
                 }
                 self.onClientCountChange?(self.connections.count)
             case .failed, .cancelled:
@@ -135,6 +135,28 @@ final class AudioStreamServer {
             }
         }
         connection.start(queue: queue)
+    }
+
+    /// Sends one HTTP chunk: the payload length in hex, the payload, then a
+    /// blank line.
+    ///
+    /// The response advertises `Transfer-Encoding: chunked`, so the framing
+    /// has to be there too. A Cast device's media stack parses the stream as
+    /// HTTP, and raw bytes without chunk headers are read as a broken
+    /// response rather than as audio.
+    private func sendChunk(_ data: Data, on connection: NWConnection) {
+        connection.send(content: Self.chunkFraming(data), completion: .contentProcessed { _ in })
+    }
+
+    /// Builds the bytes of one HTTP chunk around a payload.
+    ///
+    /// Kept separate from the send so the framing can be checked directly.
+    static func chunkFraming(_ data: Data) -> Data {
+        var chunk = Data()
+        chunk.append(Data(String(format: "%x\r\n", data.count).utf8))
+        chunk.append(data)
+        chunk.append(Data("\r\n".utf8))
+        return chunk
     }
 
     /// Minimal HTTP response head for a chunked stream.
