@@ -33,6 +33,7 @@ struct CastMessage {
     var payloadBinary: Data?
 
     init(
+        protocolVersion: UInt32 = 0,
         sourceID: String,
         destinationID: String,
         namespace: String,
@@ -40,6 +41,7 @@ struct CastMessage {
         payloadUTF8: String? = nil,
         payloadBinary: Data? = nil
     ) {
+        self.protocolVersion = protocolVersion
         self.sourceID = sourceID
         self.destinationID = destinationID
         self.namespace = namespace
@@ -151,6 +153,7 @@ struct CastMessage {
             throw CastMessageError.missingRequiredField
         }
         return CastMessage(
+            protocolVersion: protocolVersion,
             sourceID: sourceID,
             destinationID: destinationID,
             namespace: namespace,

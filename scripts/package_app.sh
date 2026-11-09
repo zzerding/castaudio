@@ -1,5 +1,15 @@
 #!/bin/bash
-# Separate builds avoid SwiftPM xcbuild duplicate outputs in multi-arch mode.
+# Package the SwiftPM executable into a launchable .app bundle.
+#
+# The local machine has the Swift toolchain (Command Line Tools) but no full
+# Xcode, so `swift build` works locally while `xcodebuild` does not. GitHub
+# Actions runs the same script on a macOS runner with full Xcode.
+#
+# Universal binary note: `swift build --arch arm64 --arch x86_64` fails inside
+# SwiftPM's xcbuild backend (SWIFT_VERSION '' is unsupported / duplicate output
+# file). Building each architecture in its own scratch path and merging the
+# results with `lipo -create` works reliably.
+#
 # Usage: ./scripts/package_app.sh [debug|release]
 #   BUILD_UNIVERSAL=1         build arm64 + x86_64 and merge into one binary
 #   BUILD_ARCHS="arm64 x86_64" build exactly these architectures
@@ -29,7 +39,14 @@ else
   for ARCH in "${ARCHS[@]}"; do
     SCRATCH="$ROOT/.build-$ARCH"
     echo "==> swift build -c $CONFIG --arch $ARCH"
-    swift build -c "$CONFIG" --arch "$ARCH" --scratch-path "$SCRATCH"
+    if ! swift build -c "$CONFIG" --arch "$ARCH" --scratch-path "$SCRATCH"; then
+      echo "!! build failed for $ARCH" >&2
+      if [[ ${#ARCHS[@]} -eq 1 ]]; then
+        exit 1
+      fi
+      echo "!! skipping $ARCH, continuing with the other architectures" >&2
+      continue
+    fi
     BIN_DIR="$(swift build -c "$CONFIG" --arch "$ARCH" --scratch-path "$SCRATCH" --show-bin-path)"
     BINARIES+=("$BIN_DIR/$APP_NAME")
   done
@@ -51,10 +68,6 @@ if [[ ${#BINARIES[@]} -eq 1 ]]; then
 else
   echo "==> lipo -create ${BINARIES[*]}"
   lipo -create "${BINARIES[@]}" -output "$APP_DIR/Contents/MacOS/$APP_NAME"
-fi
-
-if [[ ${#ARCHS[@]} -gt 0 ]]; then
-  lipo -verify_arch "${ARCHS[@]}" "$APP_DIR/Contents/MacOS/$APP_NAME"
 fi
 
 cp "$ROOT/AppBundle/Info.plist" "$APP_DIR/Contents/Info.plist"

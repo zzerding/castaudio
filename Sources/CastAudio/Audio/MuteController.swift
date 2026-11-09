@@ -72,7 +72,7 @@ enum SystemVolume {
     static func setOutputVolume(_ value: Float) -> Bool {
         guard let deviceID = defaultOutputDevice() else { return false }
         var volume = value
-        var size = UInt32(MemoryLayout<Float32>.size)
+        let size = UInt32(MemoryLayout<Float32>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             mScope: kAudioDevicePropertyScopeOutput,
