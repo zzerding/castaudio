@@ -1,0 +1,49 @@
+name: Build macOS App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  build:
+    name: Build CastAudio.app
+    runs-on: macos-14
+    env:
+      BUILD_UNIVERSAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build and package .app
+        run: ./scripts/package_app.sh release
+
+      - name: Verify bundle
+        run: |
+          set -euo pipefail
+          APP_DIR="build/CastAudio.app"
+          codesign --verify --deep --strict "$APP_DIR"
+          lipo -info "$APP_DIR/Contents/MacOS/CastAudio"
+          plutil -lint "$APP_DIR/Contents/Info.plist"
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CastAudio-app
+          path: build/CastAudio.app
+          if-no-files-found: error
+
+      - name: Upload zipped .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: CastAudio-app-zip
+          path: build/CastAudio.zip
+          if-no-files-found: error
