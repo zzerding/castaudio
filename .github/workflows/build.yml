@@ -29,6 +29,7 @@ jobs:
           APP_DIR="build/CastAudio.app"
           codesign --verify --deep --strict "$APP_DIR"
           lipo -info "$APP_DIR/Contents/MacOS/CastAudio"
+          lipo -verify_arch arm64 x86_64 "$APP_DIR/Contents/MacOS/CastAudio"
           plutil -lint "$APP_DIR/Contents/Info.plist"
 
       - name: Run unit tests

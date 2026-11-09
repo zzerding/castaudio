@@ -56,7 +56,7 @@ struct RootView: View {
     private var statusPills: some View {
         HStack(spacing: 10) {
             StatusPill(label: "采集", active: model.status == .running)
-            StatusPill(label: "推流", active: model.status == .running && model.clientCount > 0)
+            StatusPill(label: "推流", active: model.clientCount > 0)
             StatusPill(label: "有声音", active: model.levelDBFS > -55, tint: StudioTheme.cyan)
             StatusPill(label: "本机静音", active: model.muteMode == .globalMute && model.status == .running, tint: StudioTheme.danger)
         }
@@ -124,6 +124,19 @@ struct RootView: View {
                     .font(StudioTheme.monoFont)
                     .foregroundStyle(StudioTheme.danger)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if model.castLinkState == .connected {
+                HStack(spacing: 8) {
+                    StatusPill(
+                        label: model.playerState,
+                        active: model.isPlaying,
+                        tint: model.isPlaying ? StudioTheme.accent : StudioTheme.textMuted
+                    )
+                    Text(String(format: "%.1fs", model.playbackPosition))
+                        .font(StudioTheme.monoFont)
+                        .foregroundStyle(StudioTheme.textMuted)
+                }
             }
         }
     }

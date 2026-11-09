@@ -82,6 +82,13 @@ final class PipelineModel: ObservableObject {
     @Published private(set) var speakerMuted = false
     /// Whether the app is looking for speakers.
     @Published private(set) var isDiscovering = false
+    /// The player's state reported by the speaker: PLAYING, BUFFERING or
+    /// IDLE.
+    @Published private(set) var playerState: String = "IDLE"
+    /// How far the speaker has played, in seconds.
+    @Published private(set) var playbackPosition: Double = 0
+    /// Whether the speaker is playing audio right now.
+    var isPlaying: Bool { playerState == "PLAYING" }
 
     private let discovery = CastDiscovery()
     private var session: CastSession?
@@ -209,7 +216,7 @@ final class PipelineModel: ObservableObject {
     /// Opens the channel to the selected speaker and asks it to play the
     /// stream.
     func connectToSelectedDevice() {
-        guard let device = selectedDevice, let url = streamURL else { return }
+        guard let device = selectedDevice, streamURL != nil else { return }
         session?.disconnect()
 
         let session = CastSession(device: device)
@@ -221,9 +228,6 @@ final class PipelineModel: ObservableObject {
                 switch state {
                 case .connected:
                     self.castLinkState = .connected
-                    // Launch the Default Media Receiver, then load the
-                    // stream once the receiver reports its session.
-                    session.launchDefaultMediaReceiver()
                 case .connecting:
                     self.castLinkState = .connecting
                 case .failed(let message):
@@ -239,23 +243,37 @@ final class PipelineModel: ObservableObject {
                 self?.speakerMuted = muted
             }
         }
-        session.onMessage = { [weak self] message in
-            // Once the receiver reports its session id, the media can be
-            // loaded on the transport.
-            guard let self else { return }
-            guard message.namespace == CastNamespace.receiver else { return }
-            guard let payload = try? message.jsonObject(),
-                  let type = payload["type"] as? String,
-                  type == "RECEIVER_STATUS" else { return }
+        session.onPlaybackStateChange = { [weak self] playerState, position in
             Task { @MainActor in
-                if self.session?.hasMediaSession == true, let url = self.streamURL {
-                    self.session?.loadMedia(url: url)
-                }
+                self?.playerState = playerState
+                self?.playbackPosition = position
             }
+        }
+        // The device only accepts a LOAD on the media namespace once that
+        // namespace has been opened for the application session, so the
+        // stream is handed over at that point.
+        session.onMediaNamespaceReady = { [weak self] _ in
+            Task { @MainActor in
+                self?.loadStreamOnSpeaker()
+            }
+        }
+        // The receiver is launched once the platform status has arrived: the
+        // device ignores a LAUNCH that arrives before that.
+        session.onPlatformReady = {
+            session.launchDefaultMediaReceiver()
         }
 
         castLinkState = .connecting
         session.connect()
+    }
+
+    /// Hands the local stream to the speaker.
+    ///
+    /// This waits for the media namespace to be connected, because a LOAD
+    /// sent too early is answered by the device with a CLOSE.
+    private func loadStreamOnSpeaker() {
+        guard let session, session.hasMediaSession, let url = streamURL else { return }
+        session.loadMedia(url: url)
     }
 
     /// Sets the speaker's volume.

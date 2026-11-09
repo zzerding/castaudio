@@ -23,6 +23,16 @@ final class CastSession {
     var onMessage: ((CastMessage) -> Void)?
     /// Called when the device reports its volume.
     var onVolumeChange: ((Double, Bool) -> Void)?
+    /// Called when the device reports the media playback state, with the
+    /// player's state ("PLAYING", "BUFFERING", "IDLE") and the position in
+    /// seconds.
+    var onPlaybackStateChange: ((String, Double) -> Void)?
+    /// Called when the media namespace has been opened for a session and the
+    /// device will accept a LOAD on it.
+    var onMediaNamespaceReady: ((String) -> Void)?
+    /// Called when the device has reported its platform status. A receiver
+    /// has to be launched only after this point.
+    var onPlatformReady: (() -> Void)?
 
     enum State: Equatable {
         case idle
@@ -50,6 +60,10 @@ final class CastSession {
     private var heartbeatTimer: DispatchSourceTimer?
     private var sessionID: String?
     private var transportID: String?
+    /// Whether the media namespace has been opened for the current session.
+    private var mediaNamespaceConnected = false
+    /// Whether the device has reported its platform status yet.
+    private var platformReady = false
 
     /// Whether the device reported a running application session, which is
     /// what the media load request needs to target.
@@ -83,6 +97,10 @@ final class CastSession {
             case .ready:
                 self?.state = .connected
                 self?.sendConnect()
+                // The device only answers a LAUNCH after it has reported its
+                // platform status once, so the status is requested right
+                // after the handshake.
+                self?.requestStatus()
                 self?.startHeartbeat()
             case .failed(let error):
                 self?.state = .failed(error.localizedDescription)
@@ -105,6 +123,8 @@ final class CastSession {
         receiveBuffer.removeAll()
         sessionID = nil
         transportID = nil
+        mediaNamespaceConnected = false
+        platformReady = false
         state = .idle
     }
 
@@ -153,11 +173,42 @@ final class CastSession {
 
     /// Opens the virtual connection to the device.
     private func sendConnect() {
-        send(namespace: CastNamespace.connection, payload: [
-            "type": "CONNECT",
-            "userAgent": "CastAudio/1.0 (macOS)",
-            "origin": [:] as [String: Any]
-        ])
+        send(namespace: CastNamespace.connection, payload: Self.connectPayload)
+    }
+
+    /// The payload of a CONNECT message.
+    ///
+    /// The `senderInfo` block is part of the handshake the device expects;
+    /// without it the device closes the channel right after the CONNECT.
+    static let connectPayload: [String: Any] = [
+        "type": "CONNECT",
+        "userAgent": "CastAudio/1.0 (macOS)",
+        "origin": [:] as [String: Any],
+        "senderInfo": [
+            "sdkType": 2,
+            "version": "CastAudio/1.0",
+            "browserVersion": "CastAudio/1.0",
+            "platform": 6,
+            "connectionType": 1
+        ] as [String: Any]
+    ]
+
+    /// Opens a virtual connection on a namespace, addressed to one endpoint.
+    ///
+    /// The device treats every namespace as its own virtual connection. The
+    /// media namespace in particular only accepts a LOAD after it has been
+    /// CONNECTed with the application session id as the destination; without
+    /// that step the device closes the channel instead of playing anything.
+    ///
+    /// `onOpen` is called once the request has been written, so the caller
+    /// can follow up with a message on that namespace.
+    func connectNamespace(namespace: String, destinationID: String, onOpen: (() -> Void)? = nil) {
+        send(
+            namespace: CastNamespace.connection,
+            destinationID: destinationID,
+            payload: Self.connectPayload
+        )
+        onOpen?()
     }
 
     /// Asks the device to launch the Default Media Receiver.
@@ -171,21 +222,45 @@ final class CastSession {
     }
 
     /// Tells the running receiver to play a media URL.
+    ///
+    /// The LOAD is addressed to the application session, and the media
+    /// namespace has to be CONNECTed first — see `connectNamespace`.
     func loadMedia(url: URL, contentType: String = "audio/aac") {
+        guard let sessionID else {
+            NSLog("[CastAudio] Cannot load media before the receiver reports a session")
+            return
+        }
         requestCounter += 1
-        var media: [String: Any] = [
+        let media: [String: Any] = [
             "contentId": url.absoluteString,
             "streamType": "LIVE",
-            "contentType": contentType
+            "contentType": contentType,
+            "mediaSessionId": sessionID
         ]
-        if let transportID {
-            media["mediaSessionId"] = transportID
-        }
-        send(namespace: CastNamespace.media, payload: [
-            "type": "LOAD",
-            "media": media,
-            "requestId": requestCounter
-        ])
+        send(
+            namespace: CastNamespace.media,
+            destinationID: sessionID,
+            payload: [
+                "type": "LOAD",
+                "media": media,
+                "requestId": requestCounter
+            ]
+        )
+    }
+
+    /// Stops the media that is currently playing.
+    func stopMedia() {
+        guard let sessionID else { return }
+        requestCounter += 1
+        send(
+            namespace: CastNamespace.media,
+            destinationID: sessionID,
+            payload: [
+                "type": "STOP",
+                "requestId": requestCounter,
+                "mediaSessionId": sessionID
+            ]
+        )
     }
 
     /// Sets the receiver's volume.
@@ -251,17 +326,30 @@ final class CastSession {
         }
     }
 
+    /// Feeds a message into the session's message handling.
+    ///
+    /// Used by the tests to drive the state machine without a device.
+    func handleForTesting(_ message: CastMessage) {
+        handle(message)
+    }
+
     private func handle(_ message: CastMessage) {
         onMessage?(message)
 
         guard let payload = try? message.jsonObject() else { return }
         let type = payload["type"] as? String ?? ""
-
         switch (message.namespace, type) {
         case (CastNamespace.heartbeat, "PING"):
             send(namespace: CastNamespace.heartbeat, payload: ["type": "PONG"])
+        case (CastNamespace.connection, "CLOSE"):
+            // The device closes the virtual connection while it replaces an
+            // earlier session. The channel itself stays usable, so this is
+            // logged rather than treated as a failure.
+            NSLog("[CastAudio] Device closed the virtual connection")
         case (CastNamespace.receiver, "RECEIVER_STATUS"):
             readStatus(payload)
+        case (CastNamespace.media, "MEDIA_STATUS"):
+            readMediaStatus(payload)
         case (CastNamespace.receiver, "LAUNCH_ERROR"):
             let reason = payload["reason"] as? String ?? "unknown"
             state = .failed("启动接收器失败：\(reason)")
@@ -277,15 +365,53 @@ final class CastSession {
             let muted = volume["muted"] as? Bool ?? false
             onVolumeChange?(level, muted)
         }
+        // The first platform status means the device is ready for a LAUNCH.
+        if !platformReady {
+            platformReady = true
+            onPlatformReady?()
+        }
         if let applications = status["applications"] as? [[String: Any]] {
             for application in applications {
-                if let id = application["appId"] as? String,
-                   id == CastDevice.defaultMediaReceiverID {
-                    sessionID = application["sessionId"] as? String
-                    transportID = application["transportId"] as? String ?? sessionID
+                guard let id = application["appId"] as? String,
+                      id == CastDevice.defaultMediaReceiverID else { continue }
+                guard let newSession = application["sessionId"] as? String else { continue }
+                transportID = application["transportId"] as? String ?? newSession
+                let connected = application["senderConnected"] as? Bool ?? false
+
+                guard newSession != sessionID else {
+                    // Same session, but the device may have just reported
+                    // that this sender is now connected to the app.
+                    if connected, !mediaNamespaceConnected {
+                        openMediaNamespace(newSession)
+                    }
+                    continue
                 }
+                sessionID = newSession
+                mediaNamespaceConnected = false
+                openMediaNamespace(newSession)
             }
         }
+    }
+
+    /// Opens the media namespace for a session and reports when it is ready
+    /// to accept a LOAD.
+    private func openMediaNamespace(_ session: String) {
+        connectNamespace(
+            namespace: CastNamespace.media,
+            destinationID: session
+        ) { [weak self] in
+            guard let self else { return }
+            self.mediaNamespaceConnected = true
+            self.onMediaNamespaceReady?(session)
+        }
+    }
+
+    private func readMediaStatus(_ payload: [String: Any]) {
+        guard let entries = payload["status"] as? [[String: Any]] else { return }
+        guard let first = entries.first else { return }
+        let playerState = first["playerState"] as? String ?? "UNKNOWN"
+        let currentTime = first["currentTime"] as? Double ?? 0
+        onPlaybackStateChange?(playerState, currentTime)
     }
 
     // MARK: - Heartbeat
