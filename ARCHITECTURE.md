@@ -57,7 +57,7 @@ macOS 上没有可用的官方 Cast 发送端 SDK（Google Cast iOS SDK 不支�
 
 推流 URL 必须是**本机局域网 IP**，不是 `localhost`，否则音箱拉不到。
 
-协议实现要点（均已按 Chromium 的 `cast_channel.proto` 核对）：
+协议实现要点（均已按 Chromium 的 `cast_channel.proto` 核对，并在真机 Google Home 上跑通）：
 
 | 细节 | 约定 |
 |---|---|
@@ -69,9 +69,19 @@ macOS 上没有可用的官方 Cast 发送端 SDK（Google Cast iOS SDK 不支�
 | TLS | 音箱用自签证书，握手时不做证书校验（只走本地网络控制通道） |
 | 心跳 | 每 5 秒发一次 PING，收到 PING 回 PONG；否则音箱会主动断开 |
 
-protobuf 线格式在工程内自己实现（`Sources/CastAudio/Cast/Protobuf.swift`），不引入外部包依赖，CI 不需要拉取第三方源码。
+**握手顺序（三条缺一不可，都是真机实测踩出来的）**：
 
-**投送顺序**：连接 → `CONNECT` → `LAUNCH`（Default Media Receiver）→ 等设备回报 `RECEIVER_STATUS` 里的 sessionId → `LOAD`（指向本机 HTTP 流地址）。
+1. `CONNECT`（目标 `receiver-0`）→ payload 里**必须带 `senderInfo`**（`sdkType`/`version`/`browserVersion`/`platform`/`connectionType`）。缺了 `senderInfo` 设备会在握手后立刻回 `CLOSE`。
+2. `GET_STATUS` → 设备第一次回报平台状态后，才发 `LAUNCH`。设备会**忽略**在平台状态之前到达的 `LAUNCH`。
+3. `LAUNCH`（appId `CC1AD845`）→ 设备回报 `RECEIVER_STATUS`，其中带 `sessionId`。
+4. **再发一次 `CONNECT`**，这次目标填上一步的 `sessionId`，用于打开 media namespace。每个 namespace 都是独立的虚拟连接，不开 media namespace 就直接 `LOAD`，设备会回 `CLOSE`。
+5. `LOAD` → 目标填 `sessionId`，`media.contentId` 是本机 HTTP 流地址，`streamType: LIVE`，`contentType: audio/aac`。
+
+**投送顺序**：连接 → `CONNECT` → `GET_STATUS` → `LAUNCH` → `CONNECT`(dest=sessionId) → `LOAD` → 设备拉流 → `MEDIA_STATUS` 回报 `PLAYING`。
+
+HTTP 推流响应必须真正按 chunk 写（`Transfer-Encoding: chunked` 时每块要有十六进制长度头 + `\r\n`），不能只声明 chunked 却裸写 ADTS 字节——设备的媒体栈会把裸字节当成坏响应而不是音频。
+
+protobuf 线格式在工程内自己实现（`Sources/CastAudio/Cast/Protobuf.swift`），不引入外部包依赖，CI 不需要拉取第三方源码。
 
 ### 2.4 音箱控制
 
