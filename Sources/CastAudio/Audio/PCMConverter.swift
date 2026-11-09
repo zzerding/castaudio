@@ -24,8 +24,16 @@ enum PCMConverter {
     ///   interpreted (no format description, or an unsupported layout).
     static func interleavedPCM16(from sampleBuffer: CMSampleBuffer) -> Data? {
         guard let sourceBuffer = makeSourceBuffer(from: sampleBuffer) else { return nil }
-        guard let sourceFormat = sourceBuffer.format as AVAudioFormat? else { return nil }
-        guard let converted = convert(sourceBuffer, from: sourceFormat) else { return nil }
+        return interleavedPCM16(from: sourceBuffer)
+    }
+
+    /// Converts an audio buffer into interleaved PCM16 bytes.
+    ///
+    /// The buffer may be in any layout: it is resampled and remixed into
+    /// the target format first, then interleaved.
+    static func interleavedPCM16(from buffer: AVAudioPCMBuffer) -> Data? {
+        guard let sourceFormat = buffer.format as AVAudioFormat? else { return nil }
+        guard let converted = convert(buffer, from: sourceFormat) else { return nil }
         return interleave(converted)
     }
 

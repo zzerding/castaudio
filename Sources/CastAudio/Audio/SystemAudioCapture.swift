@@ -29,6 +29,11 @@ final class SystemAudioCapture {
     var onFailure: ((Error) -> Void)?
 
     private var stream: SCStream?
+    /// The stream output has to be kept alive for as long as the capture
+    /// runs: ScreenCaptureKit only holds it weakly, so a local variable
+    /// would be released when `start()` returns and every later audio frame
+    /// would be dropped because the output could no longer be found.
+    private var output: AudioStreamOutput?
     private let outputQueue = DispatchQueue(label: "com.castaudio.capture")
 
     /// Whether the process currently holds Screen Recording permission.
@@ -82,6 +87,7 @@ final class SystemAudioCapture {
                 self?.onFailure?(error)
             }
         )
+        self.output = output
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
         do {
             try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: outputQueue)
@@ -96,6 +102,7 @@ final class SystemAudioCapture {
     func stop() async {
         guard let stream else { return }
         self.stream = nil
+        self.output = nil
         try? await stream.stopCapture()
     }
 }
