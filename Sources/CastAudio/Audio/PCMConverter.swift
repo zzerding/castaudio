@@ -79,27 +79,25 @@ enum PCMConverter {
     }
 
     /// Turns the de-interleaved Int16 planes into interleaved bytes.
-    private static func interleave(_ buffer: AVAudioPCMBuffer) -> Data? {
+    static func interleave(_ buffer: AVAudioPCMBuffer) -> Data? {
         guard let channels = buffer.int16ChannelData else { return nil }
         let frameCount = Int(buffer.frameLength)
         let channelCount = Int(buffer.format.channelCount)
         guard frameCount > 0, channelCount > 0 else { return nil }
 
-        var output = Data(capacity: frameCount * channelCount * 2)
+        // The buffer must be allocated with its length, not only with its
+        // capacity: Data(capacity:) reserves space but leaves the length at
+        // zero, so the writes below would fall outside the buffer and the
+        // returned data would still be empty.
+        var output = Data(count: frameCount * channelCount * 2)
         output.withUnsafeMutableBytes { raw in
             let base = raw.bindMemory(to: Int16.self).baseAddress!
             for frame in 0..<frameCount {
                 for channel in 0..<channelCount {
                     // A mono source reaching a stereo target is duplicated by
-                    // the converter, but a stereo source with only one plane
-                    // present is filled with silence for the missing channel.
-                    let value: Int16
-                    if channel < channelCount {
-                        value = channels[channel][frame]
-                    } else {
-                        value = 0
-                    }
-                    base[frame * channelCount + channel] = value
+                    // the converter, so every plane of the target format is
+                    // present here.
+                    base[frame * channelCount + channel] = channels[channel][frame]
                 }
             }
         }

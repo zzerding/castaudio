@@ -72,6 +72,8 @@ final class SystemAudioCapture {
         configuration.excludesCurrentProcessAudio = true
         configuration.showsCursor = false
 
+        NSLog("[CastAudio] capture start: filterApps=\(content.applications.count) displays=\(content.displays.count)")
+
         let output = AudioStreamOutput(
             onPCM: { [weak self] data in
                 self?.onPCM?(data)
@@ -111,7 +113,10 @@ private final class AudioStreamOutput: NSObject, SCStreamOutput, SCStreamDelegat
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
-        guard let pcm = PCMConverter.interleavedPCM16(from: sampleBuffer) else { return }
+        guard let pcm = PCMConverter.interleavedPCM16(from: sampleBuffer) else {
+            NSLog("[CastAudio] audio buffer DROPPED by PCMConverter")
+            return
+        }
         onPCM(pcm)
     }
 
