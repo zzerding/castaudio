@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build CastAudio.app
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       BUILD_UNIVERSAL: "1"
     steps:
