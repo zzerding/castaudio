@@ -169,3 +169,57 @@ import Testing
     #expect(playback?.0 == "PLAYING")
     #expect(playback?.1 == 12.5)
 }
+
+/// A SET_VOLUME without a request id is accepted by the device but never
+/// applied, so every volume change has to carry one.
+@Test func volumeChangeCarriesARequestId() throws {
+    let session = CastSession(device: CastDevice(
+        id: "test",
+        name: "test",
+        endpoint: .hostPort(host: "127.0.0.1", port: 8009)
+    ))
+
+    var sent: [[String: Any]] = []
+    session.onMessage = { _ in }
+    session.captureOutgoingForTesting { sent.append($0) }
+
+    session.setVolume(level: 0.4)
+    session.setMuted(true)
+
+    #expect(sent.count == 2)
+    for payload in sent {
+        #expect(payload["type"] as? String == "SET_VOLUME")
+        #expect(payload["requestId"] != nil)
+    }
+}
+
+/// The device broadcasts the new volume when it changes from another source.
+@Test func deviceUpdateBroadcastIsReported() throws {
+    let session = CastSession(device: CastDevice(
+        id: "test",
+        name: "test",
+        endpoint: .hostPort(host: "127.0.0.1", port: 8009)
+    ))
+
+    var reported: (Double, Bool)?
+    session.onVolumeChange = { level, muted in reported = (level, muted) }
+
+    let payload: [String: Any] = [
+        "type": "DEVICE_UPDATED",
+        "device": [
+            "deviceId": "d08b3654",
+            "name": "书房",
+            "volume": ["level": 0.25, "muted": false]
+        ]
+    ]
+    let message = try CastMessage.json(
+        sourceID: "receiver-0",
+        destinationID: "*",
+        namespace: CastNamespace.multizone,
+        payload: payload
+    )
+    session.handleForTesting(message)
+
+    #expect(reported?.0 == 0.25)
+    #expect(reported?.1 == false)
+}

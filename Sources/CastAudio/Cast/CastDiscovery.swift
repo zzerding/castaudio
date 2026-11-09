@@ -8,6 +8,9 @@ enum CastNamespace {
     static let receiver = "urn:x-cast:com.google.cast.receiver"
     static let media = "urn:x-cast:com.google.cast.media"
     static let deviceAuth = "urn:x-cast:com.google.cast.tp.deviceauth"
+    /// The device broadcasts its state here, for example when the volume is
+    /// changed from another phone.
+    static let multizone = "urn:x-cast:com.google.cast.multizone"
 }
 
 /// A Cast device found on the local network.

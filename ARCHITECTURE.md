@@ -85,6 +85,12 @@ protobuf 线格式在工程内自己实现（`Sources/CastAudio/Cast/Protobuf.sw
 
 ### 2.4 音箱控制
 
+`SET_VOLUME` 发在 `urn:x-cast:com.google.cast.receiver` 命名空间，目标是 `receiver-0`。
+
+**`requestId` 是必填项**——设备收到没有 `requestId` 的 `SET_VOLUME` 时不会报错、也不会拒绝，但**就是不生效**（实测隔离验证：带 `requestId` 生效，不带则音量纹丝不动；`controlType` 与否无关）。设备应用后会回一条 `RECEIVER_STATUS`，并在 `urn:x-cast:com.google.cast.multizone` 命名空间广播一条 `DEVICE_UPDATED`（destination 为 `*`，同样带 `volume.level` / `volume.muted`），后者用于同步「在手机上改了音量」这种外部变化。
+
+只改静音时 `volume` 对象里只放 `muted` 字段即可，不需要 `level`。
+
 `SET_VOLUME` / `SET_MUTE` 走 `urn:x-cast:com.google.cast.receiver` 命名空间；音量变化通过接收端的 `RECEIVER_STATUS` 推送同步到 UI。对应 Android 的 `CastSdkSessionController` 那一层，接口形状保持一致。
 
 ### 2.5 目标管理与 UI

@@ -58,6 +58,8 @@ final class CastSession {
     private var receiveBuffer = Data()
     private var requestCounter = 0
     private var heartbeatTimer: DispatchSourceTimer?
+    /// Test hook that sees every payload before it goes on the wire.
+    private var outgoingCapture: (([String: Any]) -> Void)?
     private var sessionID: String?
     private var transportID: String?
     /// Whether the media namespace has been opened for the current session.
@@ -147,6 +149,7 @@ final class CastSession {
 
     /// Sends a JSON payload on a namespace.
     func send(namespace: String, destinationID: String? = nil, payload: [String: Any]) {
+        outgoingCapture?(payload)
         do {
             let message = try CastMessage.json(
                 sourceID: senderID,
@@ -264,21 +267,30 @@ final class CastSession {
     }
 
     /// Sets the receiver's volume.
+    ///
+    /// The `requestId` is not optional: without it the device accepts the
+    /// message but never applies it. The device answers with a
+    /// `RECEIVER_STATUS` and broadcasts a `DEVICE_UPDATED` carrying the new
+    /// level.
     func setVolume(level: Double, muted: Bool? = nil) {
+        requestCounter += 1
         var volume: [String: Any] = ["level": max(0, min(1, level))]
         if let muted {
             volume["muted"] = muted
         }
         send(namespace: CastNamespace.receiver, payload: [
             "type": "SET_VOLUME",
+            "requestId": requestCounter,
             "volume": volume
         ])
     }
 
     /// Mutes or unmutes the receiver.
     func setMuted(_ muted: Bool) {
+        requestCounter += 1
         send(namespace: CastNamespace.receiver, payload: [
             "type": "SET_VOLUME",
+            "requestId": requestCounter,
             "volume": ["muted": muted]
         ])
     }
@@ -333,6 +345,13 @@ final class CastSession {
         handle(message)
     }
 
+    /// Captures the payloads the session sends.
+    ///
+    /// Used by the tests to check what goes on the wire without a device.
+    func captureOutgoingForTesting(_ handler: @escaping ([String: Any]) -> Void) {
+        outgoingCapture = handler
+    }
+
     private func handle(_ message: CastMessage) {
         onMessage?(message)
 
@@ -353,9 +372,22 @@ final class CastSession {
         case (CastNamespace.receiver, "LAUNCH_ERROR"):
             let reason = payload["reason"] as? String ?? "unknown"
             state = .failed("启动接收器失败：\(reason)")
+        case (CastNamespace.multizone, "DEVICE_UPDATED"):
+            // The device broadcasts this when the volume changes from any
+            // source, including another phone.
+            readDeviceUpdate(payload)
         default:
             break
         }
+    }
+
+    /// Reads the volume out of a `DEVICE_UPDATED` broadcast.
+    private func readDeviceUpdate(_ payload: [String: Any]) {
+        guard let device = payload["device"] as? [String: Any],
+              let volume = device["volume"] as? [String: Any] else { return }
+        let level = volume["level"] as? Double ?? 0
+        let muted = volume["muted"] as? Bool ?? false
+        onVolumeChange?(level, muted)
     }
 
     private func readStatus(_ payload: [String: Any]) {
