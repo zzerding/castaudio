@@ -14,6 +14,9 @@ struct RootView: View {
                     StudioCard(title: "投音控制台", subtitle: model.status.label) {
                         statusPills
                     }
+                    StudioCard(title: "音箱", subtitle: model.castLinkState.label) {
+                        speakerControls
+                    }
                     StudioCard(title: "电平", subtitle: "dBFS") {
                         levelMeter
                     }
@@ -56,6 +59,72 @@ struct RootView: View {
             StatusPill(label: "推流", active: model.status == .running && model.clientCount > 0)
             StatusPill(label: "有声音", active: model.levelDBFS > -55, tint: StudioTheme.cyan)
             StatusPill(label: "本机静音", active: model.muteMode == .globalMute && model.status == .running, tint: StudioTheme.danger)
+        }
+    }
+
+    /// Speaker picker, connection state and the speaker's own volume.
+    private var speakerControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Picker("", selection: $model.selectedDeviceID) {
+                    Text("未选择").tag(String?.none)
+                    ForEach(model.devices) { device in
+                        Text(device.name).tag(String?.some(device.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220)
+
+                Button {
+                    model.toggleDiscovery()
+                } label: {
+                    Text(model.isDiscovering ? "停止搜索" : "搜索音箱")
+                        .font(StudioTheme.monoFont)
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                if model.castLinkState == .connected {
+                    Button {
+                        model.toggleSpeakerMute()
+                    } label: {
+                        Text(model.speakerMuted ? "取消静音" : "静音")
+                            .font(StudioTheme.monoFont)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            if model.devices.isEmpty {
+                Text(model.isDiscovering ? "正在搜索局域网内的音箱…" : "还没有找到音箱。")
+                    .font(StudioTheme.monoFont)
+                    .foregroundStyle(StudioTheme.textMuted)
+            }
+
+            HStack(spacing: 12) {
+                Text("音量")
+                    .font(StudioTheme.monoFont)
+                    .foregroundStyle(StudioTheme.textMuted)
+                Slider(
+                    value: Binding(
+                        get: { model.speakerVolume },
+                        set: { model.setSpeakerVolume($0) }
+                    ),
+                    in: 0...1
+                )
+                Text(String(format: "%.0f%%", model.speakerVolume * 100))
+                    .font(StudioTheme.monoFont)
+                    .foregroundStyle(StudioTheme.textSecondary)
+                    .frame(width: 44, alignment: .trailing)
+            }
+
+            if case .failed(let message) = model.castLinkState {
+                Text(message)
+                    .font(StudioTheme.monoFont)
+                    .foregroundStyle(StudioTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

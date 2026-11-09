@@ -72,9 +72,14 @@ final class SystemAudioCapture {
         configuration.excludesCurrentProcessAudio = true
         configuration.showsCursor = false
 
-        let output = AudioStreamOutput(onPCM: { [weak self] data in
-            self?.onPCM?(data)
-        })
+        let output = AudioStreamOutput(
+            onPCM: { [weak self] data in
+                self?.onPCM?(data)
+            },
+            onFailure: { [weak self] error in
+                self?.onFailure?(error)
+            }
+        )
         let stream = SCStream(filter: filter, configuration: configuration, delegate: output)
         do {
             try stream.addStreamOutput(output, type: .audio, sampleHandlerQueue: outputQueue)
@@ -96,10 +101,12 @@ final class SystemAudioCapture {
 /// Receives audio buffers from ScreenCaptureKit and converts them.
 private final class AudioStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
     private let onPCM: (Data) -> Void
-    private var failureHandler: ((Error) -> Void)?
+    /// Called when the capture stream stops with an error.
+    private let onFailure: (Error) -> Void
 
-    init(onPCM: @escaping (Data) -> Void) {
+    init(onPCM: @escaping (Data) -> Void, onFailure: @escaping (Error) -> Void) {
         self.onPCM = onPCM
+        self.onFailure = onFailure
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -108,7 +115,7 @@ private final class AudioStreamOutput: NSObject, SCStreamOutput, SCStreamDelegat
         onPCM(pcm)
     }
 
-    func stream(_ stream: SCStream, didFailWithError error: Error) {
-        failureHandler?(error)
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        onFailure(error)
     }
 }

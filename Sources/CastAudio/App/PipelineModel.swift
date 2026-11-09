@@ -20,11 +20,29 @@ enum PipelineStatus: Equatable {
     }
 }
 
-/// Owns the whole pipeline: capture → encode → serve.
+/// State of the link to the selected speaker.
+enum CastLinkState: Equatable {
+    case idle
+    case connecting
+    case connected
+    case failed(String)
+
+    var label: String {
+        switch self {
+        case .idle: return "未连接"
+        case .connecting: return "连接中"
+        case .connected: return "已连接"
+        case .failed: return "连接失败"
+        }
+    }
+}
+
+/// Owns the whole pipeline: capture → encode → serve → cast.
 ///
 /// The pieces are deliberately separate so each can be tested on its own:
 /// `SystemAudioCapture` produces PCM, `AACEncoder` turns it into ADTS frames,
-/// `AudioStreamServer` hands those frames to whoever asks for the stream.
+/// `AudioStreamServer` hands those frames to whoever asks for the stream, and
+/// `CastSession` tells the speaker to play that stream.
 @MainActor
 final class PipelineModel: ObservableObject {
     @Published private(set) var status: PipelineStatus = .idle
@@ -48,6 +66,31 @@ final class PipelineModel: ObservableObject {
     /// capture is started.
     @Published private(set) var hasScreenRecordingPermission: Bool?
 
+    // MARK: - Cast
+
+    /// Speakers found on the local network.
+    @Published private(set) var devices: [CastDevice] = []
+    /// The speaker the user picked.
+    @Published var selectedDeviceID: String? {
+        didSet { selectedDeviceChanged() }
+    }
+    /// State of the link to the selected speaker.
+    @Published private(set) var castLinkState: CastLinkState = .idle
+    /// The speaker's volume, 0...1.
+    @Published private(set) var speakerVolume: Double = 1
+    /// Whether the speaker is muted.
+    @Published private(set) var speakerMuted = false
+    /// Whether the app is looking for speakers.
+    @Published private(set) var isDiscovering = false
+
+    private let discovery = CastDiscovery()
+    private var session: CastSession?
+
+    /// The speaker currently selected, if any.
+    var selectedDevice: CastDevice? {
+        devices.first { $0.id == selectedDeviceID }
+    }
+
     init() {
         capture.onPCM = { [weak self] pcm in
             Task { @MainActor in
@@ -59,7 +102,43 @@ final class PipelineModel: ObservableObject {
                 self?.clientCount = count
             }
         }
+        discovery.onDevicesChanged = { [weak self] devices in
+            Task { @MainActor in
+                self?.devices = devices
+                // Keep a selection if the device is still there; otherwise
+                // fall back to the first one found.
+                if let current = self?.selectedDeviceID,
+                   devices.contains(where: { $0.id == current }) {
+                    return
+                }
+                self?.selectedDeviceID = devices.first?.id
+            }
+        }
     }
+
+    // MARK: - Discovery
+
+    /// Starts or stops looking for speakers.
+    func toggleDiscovery() {
+        if isDiscovering {
+            discovery.stop()
+            isDiscovering = false
+        } else {
+            discovery.start()
+            isDiscovering = true
+        }
+    }
+
+    private func selectedDeviceChanged() {
+        // A different speaker means a different session; drop the old one.
+        session?.disconnect()
+        session = nil
+        castLinkState = .idle
+        speakerVolume = 1
+        speakerMuted = false
+    }
+
+    // MARK: - Pipeline
 
     /// Starts the pipeline.
     func start() async {
@@ -99,6 +178,9 @@ final class PipelineModel: ObservableObject {
         hasScreenRecordingPermission = true
         muteController.mode = muteMode
         status = .running
+
+        // Tell the speaker to play the stream we are serving.
+        connectToSelectedDevice()
     }
 
     /// Stops the pipeline and restores the local volume.
@@ -111,6 +193,9 @@ final class PipelineModel: ObservableObject {
         levelTracker.reset()
         levelDBFS = -60
         muteController.unmute()
+        session?.disconnect()
+        session = nil
+        castLinkState = .idle
         status = .idle
     }
 
@@ -118,6 +203,74 @@ final class PipelineModel: ObservableObject {
         if case .failed = status { return true }
         return false
     }
+
+    // MARK: - Cast control
+
+    /// Opens the channel to the selected speaker and asks it to play the
+    /// stream.
+    func connectToSelectedDevice() {
+        guard let device = selectedDevice, let url = streamURL else { return }
+        session?.disconnect()
+
+        let session = CastSession(device: device)
+        self.session = session
+
+        session.onStateChange = { [weak self] state in
+            Task { @MainActor in
+                guard let self else { return }
+                switch state {
+                case .connected:
+                    self.castLinkState = .connected
+                    // Launch the Default Media Receiver, then load the
+                    // stream once the receiver reports its session.
+                    session.launchDefaultMediaReceiver()
+                case .connecting:
+                    self.castLinkState = .connecting
+                case .failed(let message):
+                    self.castLinkState = .failed(message)
+                case .idle:
+                    self.castLinkState = .idle
+                }
+            }
+        }
+        session.onVolumeChange = { [weak self] level, muted in
+            Task { @MainActor in
+                self?.speakerVolume = level
+                self?.speakerMuted = muted
+            }
+        }
+        session.onMessage = { [weak self] message in
+            // Once the receiver reports its session id, the media can be
+            // loaded on the transport.
+            guard let self else { return }
+            guard message.namespace == CastNamespace.receiver else { return }
+            guard let payload = try? message.jsonObject(),
+                  let type = payload["type"] as? String,
+                  type == "RECEIVER_STATUS" else { return }
+            Task { @MainActor in
+                if self.session?.hasMediaSession == true, let url = self.streamURL {
+                    self.session?.loadMedia(url: url)
+                }
+            }
+        }
+
+        castLinkState = .connecting
+        session.connect()
+    }
+
+    /// Sets the speaker's volume.
+    func setSpeakerVolume(_ level: Double) {
+        speakerVolume = level
+        session?.setVolume(level: level)
+    }
+
+    /// Mutes or unmutes the speaker.
+    func toggleSpeakerMute() {
+        speakerMuted.toggle()
+        session?.setMuted(speakerMuted)
+    }
+
+    // MARK: - Internals
 
     private func handlePCM(_ pcm: Data) {
         guard let encoder else { return }
