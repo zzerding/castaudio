@@ -1,8 +1,6 @@
-import XCTest
+import Testing
 @testable import CastAudio
 
-final class SmokeTests: XCTestCase {
-    func testPackageModuleLoads() {
-        XCTAssertTrue(true)
-    }
+@Test func packageModuleLoads() {
+    #expect(true)
 }
