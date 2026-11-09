@@ -48,7 +48,7 @@ Android 的 Shizuku 定向静音依赖 Android 专有的 `VolumeShaper` 独占 I
 
 macOS 上没有可用的官方 Cast 发送端 SDK（Google Cast iOS SDK 不支持 macOS 原生，只支持 Catalyst，而 Catalyst 无法用 ScreenCaptureKit 采集本机应用音频）。因此直接实现 **Cast V2 协议**：
 
-- 设备发现：Bonjour `_googlecast._tcp`（NetService / NWBrowser）。
+- 设备发现：Bonjour `_googlecast._tcp`（NWBrowser + TXT 记录）。
 - 传输层：TLS 8009 端口，protobuf 编码的 `CastMessage`。
 - 命名空间：`urn:x-cast:com.google.cast.tp.connection`（CONNECT）、`urn:x-cast:com.google.cast.tp.heartbeat`（PING/PONG）、`urn:x-cast:com.google.cast.receiver`（LAUNCH/GET_STATUS/SET_VOLUME）、`urn:x-cast:com.google.cast.media`（LOAD）。
 - 接收端用内置的 Default Media Receiver（`CC1AD845`）播放本机 HTTP 服务提供的 ADTS AAC 流。
@@ -56,6 +56,22 @@ macOS 上没有可用的官方 Cast 发送端 SDK（Google Cast iOS SDK 不支�
 音频流路径：ScreenCaptureKit PCM → ADTS AAC 封装 → 本机 HTTP 服务（分块传输，`Transfer-Encoding: chunked`）→ Cast 媒体接收器拉流。
 
 推流 URL 必须是**本机局域网 IP**，不是 `localhost`，否则音箱拉不到。
+
+协议实现要点（均已按 Chromium 的 `cast_channel.proto` 核对）：
+
+| 细节 | 约定 |
+|---|---|
+| 帧格式 | 4 字节大端长度前缀 + protobuf 消息体 |
+| `CastMessage` 字段号 | `protocol_version=1`、`source_id=2`、`destination_id=3`、`namespace=4`、`payload_type=5`、`payload_utf8=6`、`payload_binary=7` |
+| 协议版本 | `CASTV2_1_0 = 0` |
+| 负载类型 | `STRING = 0`（JSON），`BINARY = 1` |
+| 端点 id | 发送端 `sender-castaudio`，设备端未建应用会话时 `receiver-0` |
+| TLS | 音箱用自签证书，握手时不做证书校验（只走本地网络控制通道） |
+| 心跳 | 每 5 秒发一次 PING，收到 PING 回 PONG；否则音箱会主动断开 |
+
+protobuf 线格式在工程内自己实现（`Sources/CastAudio/Cast/Protobuf.swift`），不引入外部包依赖，CI 不需要拉取第三方源码。
+
+**投送顺序**：连接 → `CONNECT` → `LAUNCH`（Default Media Receiver）→ 等设备回报 `RECEIVER_STATUS` 里的 sessionId → `LOAD`（指向本机 HTTP 流地址）。
 
 ### 2.4 音箱控制
 
